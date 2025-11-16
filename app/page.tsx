@@ -17,15 +17,17 @@ export default function WelcomePage() {
           <div className="absolute -top-1/4 left-1/2 -z-10 h-96 w-96 -translate-x-1/2 bg-gradient-to-r from-indigo-500/30 to-purple-500/30 opacity-20 filter blur-3xl dark:opacity-40" />
 
           <h1 className="text-4xl font-extrabold tracking-tight sm:text-5xl md:text-6xl lg:text-7xl">
-            Parking, Perfected.
+            Find Parking Before You Go.
             <span className="block bg-gradient-to-r from-indigo-500 to-purple-500 bg-clip-text text-transparent">
-              Powered by AI.
+              Predicted by AI.
             </span>
           </h1>
+          
+          {/* --- THIS IS THE CORRECTED LINE --- */}
           <p className="max-w-2xl text-lg text-muted-foreground sm:text-xl">
-            Stop circling the block. ParkIntel uses real-time data and AI to
-            predict parking availability, so you can find a spot, save fuel,
-            and get on with your day.
+            Don't just <span className="font-semibold text-foreground">look</span> for parking. <span className="font-semibold text-foreground">Predict</span> it. Our smart map analyzes
+            real-time data to guide you to an available spot, faster. No
+            circling, no guessing.
           </p>
 
           <Link
@@ -38,7 +40,7 @@ export default function WelcomePage() {
         
         {/* Subtle Grid Background */}
         <div className="absolute inset-0 -z-20 h-full w-full bg-white dark:bg-slate-950">
-          <div className="absolute bottom-0 left-0 right-0 top-0 bg-[linear-gradient(to_right,rgba(240,240,240,0.8)_1px,transparent_1px),linear-gradient(to_bottom,rgba(240,240,240,0.8)_1px,transparent_1px)] bg-[size:36px_36px] opacity-20 dark:bg-[linear-gradient(to_right,rgba(255,255,255,0.1)_1px,transparent_1px),linear-gradient(to_bottom,rgba(255,255,255,0.1)_1px,transparent_1px)]"></div>
+          <div className="absolute bottom-0 left-0 right-0 top-0 bg-[linear-gradient(to_right,rgba(240,240,200,0.8)_1px,transparent_1px),linear-gradient(to_bottom,rgba(240,240,240,0.8)_1px,transparent_1px)] bg-[size:36px_36px] opacity-20 dark:bg-[linear-gradient(to_right,rgba(255,255,255,0.1)_1px,transparent_1px),linear-gradient(to_bottom,rgba(255,255,255,0.1)_1px,transparent_1px)]"></div>
         </div>
       </section>
 
