@@ -1,11 +1,13 @@
+// This imports the map component we will create next
+import MainMap from '@/components/map/MainMap';
+
 export default function MapPage() {
-          return (
-            <div>
-              <h1 className="p-4 text-xl">This is the main map page for Drivers</h1>
-              <div className="h-[calc(100vh-60px)] bg-gray-200">
-                {/* Your <MainMap /> component will go here */}
-                Map will load here...
-              </div>
-            </div>
-          );
-        }
+  return (
+    <div className="h-[calc(100vh-57px)] w-full">
+      {/* The h-[calc(100vh-57px)] calculates the full viewport height 
+        minus the 57px height of our sticky header.
+      */}
+      <MainMap />
+    </div>
+  );
+}
