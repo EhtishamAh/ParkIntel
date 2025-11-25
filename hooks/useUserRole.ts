@@ -31,12 +31,18 @@ export function useUserRole() {
           .eq("id", session.user.id)
           .single();
 
-        if (profile) {
+        if (error) {
+          console.error("Error fetching profile:", error);
+          // If profile doesn't exist, default to driver
+          setRole("driver");
+        } else if (profile) {
           setRole(profile.role as UserRole);
         }
         
       } catch (error) {
         console.error("Error fetching role:", error);
+        // Default to driver role on error
+        setRole("driver");
       } finally {
         setLoading(false);
       }

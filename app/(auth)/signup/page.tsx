@@ -13,23 +13,33 @@ export default function SignUpSelectionPage() {
   const handleGoogleSignUp = async (role: "driver" | "owner") => {
     setLoading(role);
     
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: {
-        // FIX: Clean URL
-        redirectTo: `${location.origin}/auth/callback`,
-        // Pass role safely here
-        queryParams: {
-          access_type: 'offline',
-          prompt: 'consent',
-          role: role, // <--- Passed as a parameter, not part of the redirect URL
+    try {
+      // Store role in localStorage temporarily (will be used after OAuth redirect)
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('pendingUserRole', role);
+      }
+      
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: `${window.location.origin}/auth/callback`,
+          queryParams: {
+            access_type: 'offline',
+            prompt: 'consent',
+          },
         },
-      },
-    });
+      });
 
-    if (error) {
-        console.error(error);
+      if (error) {
+        console.error("Signup Error:", error);
         setLoading(null);
+      }
+      
+      // The redirect happens automatically if successful
+      console.log("OAuth initiated:", data);
+    } catch (err) {
+      console.error("Signup Exception:", err);
+      setLoading(null);
     }
   };
 

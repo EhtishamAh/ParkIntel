@@ -29,7 +29,8 @@ export default function DashboardRouter() {
     } else if (role === "operator") {
       router.replace("/operator/dashboard");
     } else {
-      // Fallback for users with no role (defaults to driver map)
+      // Fallback for users with no role (default to driver map view)
+      console.log("No role found, defaulting to driver view");
       router.replace("/map");
     }
   }, [role, loading, user, router]);

@@ -1,15 +1,15 @@
-import { createServerClient, type CookieOptions } from '@supabase/ssr'
+import { createServerClient } from '@supabase/ssr'
 import { type NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 
 export async function GET(request: NextRequest) {
   const { searchParams, origin } = new URL(request.url)
   const code = searchParams.get('code')
-  const roleToAdd = searchParams.get('role')
-
-  const cookieStore = await cookies()
+  const next = searchParams.get('next') || '/auth/complete-signup'
 
   if (code) {
+    const cookieStore = await cookies()
+    
     const supabase = createServerClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -23,11 +23,7 @@ export async function GET(request: NextRequest) {
               cookiesToSet.forEach(({ name, value, options }) =>
                 cookieStore.set(name, value, options)
               )
-            } catch {
-              // The `setAll` method was called from a Server Component.
-              // This can be ignored if you have middleware refreshing
-              // user sessions.
-            }
+            } catch {}
           },
         },
       }
@@ -35,51 +31,57 @@ export async function GET(request: NextRequest) {
     
     const { error } = await supabase.auth.exchangeCodeForSession(code)
     
-    if (!error) {
-      // Handle Role Update if needed
-      if (roleToAdd) {
-        const { data: { user } } = await supabase.auth.getUser()
-        if (user) {
-           await supabase.from('profiles').upsert({
-             id: user.id,
-             email: user.email,
-             role: roleToAdd,
-             full_name: user.user_metadata.full_name
-           })
-        }
-      }
-      return NextResponse.redirect(`${origin}/dashboard`)
-    } else {
+    if (error) {
       console.error("Auth Exchange Error:", error)
+      return NextResponse.redirect(`${origin}/auth/auth-code-error?error=${encodeURIComponent(error.message)}`)
+    }
+    
+    const { data: { user } } = await supabase.auth.getUser()
+    
+    let isNewUser = false;
+    
+    if (user) {
+      // Check if profile already exists
+      const { data: existingProfile } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', user.id)
+        .single()
+      
+      // Only create profile if it doesn't exist (new signup)
+      if (!existingProfile) {
+        isNewUser = true;
+        console.log('🆕 New user detected, creating profile...');
+        
+        // For new users, create profile with default role 'driver'
+        // The role will be updated from the client side using localStorage
+        const { error: insertError } = await supabase.from('profiles').insert({
+          id: user.id,
+          email: user.email,
+          role: 'driver', // default, will be updated
+          full_name: user.user_metadata.full_name || user.user_metadata.name
+        });
+        
+        if (insertError) {
+          console.error('Error creating profile:', insertError);
+        }
+      } else {
+        console.log('👤 Existing user logging in...');
+      }
+    }
+    
+    // Redirect based on whether this is a new signup or existing login
+    if (isNewUser) {
+      // New user - go to complete-signup to set role from localStorage
+      console.log('➡️  Redirecting to complete-signup');
+      return NextResponse.redirect(`${origin}/auth/complete-signup`)
+    } else {
+      // Existing user - go directly to dashboard
+      console.log('➡️  Redirecting to dashboard');
+      return NextResponse.redirect(`${origin}/dashboard`)
     }
   }
 
-  // Fallback Check
-  // We recreate the client to check the session state safely
-  const supabaseCheck = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        cookies: {
-          getAll() {
-            return cookieStore.getAll()
-          },
-          setAll(cookiesToSet) {
-             try {
-              cookiesToSet.forEach(({ name, value, options }) =>
-                cookieStore.set(name, value, options)
-              )
-            } catch {}
-          },
-        },
-      }
-  )
-  
-  const { data: { session } } = await supabaseCheck.auth.getSession()
-  
-  if (session) {
-     return NextResponse.redirect(`${origin}/dashboard`)
-  }
-
-  return NextResponse.redirect(`${origin}/auth/auth-code-error`)
+  // No code provided - redirect to error
+  return NextResponse.redirect(`${origin}/auth/auth-code-error?error=${encodeURIComponent('No authentication code found')}`)
 }

@@ -12,22 +12,34 @@ export default function LoginPage() {
 
   const handleGoogleLogin = async () => {
     setLoading(true);
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: {
-        // FIX: Clean URL without query params
-        redirectTo: `${location.origin}/auth/callback`,
-        queryParams: {
-          access_type: 'offline',
-          prompt: 'consent',
-          // We don't need to pass a role for generic login, 
-          // but if you did, it would go here, not in the URL.
+    
+    try {
+      // Clear any pending role for regular login
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('pendingUserRole');
+      }
+      
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: `${window.location.origin}/auth/callback`,
+          queryParams: {
+            access_type: 'offline',
+            prompt: 'consent',
+          },
         },
-      },
-    });
-    if (error) {
+      });
+      
+      if (error) {
         console.error("Login Error:", error);
         setLoading(false);
+      }
+      
+      // The redirect happens automatically if successful
+      console.log("OAuth initiated:", data);
+    } catch (err) {
+      console.error("Login Exception:", err);
+      setLoading(false);
     }
   };
 
