@@ -99,14 +99,14 @@ export default function WelcomePage() {
                 
                 {/* FIXED BUTTON: Using asChild for proper linking */}
                 <Button variant="outline" className="w-full border-slate-700 text-white hover:bg-purple-950/30 hover:border-purple-500/50 hover:text-purple-300 h-12 rounded-xl" asChild>
-                  <Link href="/login">
-                    Sign In to Register Lot
+                  <Link href="/signup/owner">
+                    Get Started as Owner
                   </Link>
                 </Button>
 
-                <div className="text-center text-xs text-slate-600">
-                   Manage your business from the dashboard
-                </div>
+                <Link href="/login" className="block text-center text-xs text-slate-500 hover:text-purple-400 transition-colors">
+                  Already have an account? Sign In
+                </Link>
               </div>
             </div>
           </div>

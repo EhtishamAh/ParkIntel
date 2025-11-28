@@ -16,6 +16,40 @@ export default function MapPage() {
   const [loading, setLoading] = useState(true);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [locationStatus, setLocationStatus] = useState<"pending" | "granted" | "denied">("pending");
+  const [authChecked, setAuthChecked] = useState(false);
+
+  // Check authentication and role
+  useEffect(() => {
+    const checkAuth = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      
+      if (!user) {
+        // Not authenticated - redirect to login
+        router.push("/login");
+        return;
+      }
+
+      // Check user role - only drivers can access map
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("role")
+        .eq("id", user.id)
+        .single();
+
+      if (profile?.role === "owner") {
+        router.push("/owner/dashboard");
+        return;
+      } else if (profile?.role === "operator") {
+        router.push("/operator/dashboard");
+        return;
+      }
+
+      // User is authenticated and is a driver
+      setAuthChecked(true);
+    };
+
+    checkAuth();
+  }, [router]);
 
   const handleLogout = async () => {
     setLoggingOut(true);
@@ -25,6 +59,7 @@ export default function MapPage() {
 
   // Get user location
   useEffect(() => {
+    if (!authChecked) return;
     const init = async () => {
       if ("geolocation" in navigator) {
         navigator.geolocation.getCurrentPosition(
@@ -47,10 +82,12 @@ export default function MapPage() {
       }
     };
     init();
-  }, []);
+  }, [authChecked]);
 
   // Fetch parking lots
   useEffect(() => {
+    if (!authChecked) return;
+    
     const fetchParkingLots = async () => {
       try {
         const { data, error } = await supabase
@@ -73,7 +110,19 @@ export default function MapPage() {
     };
 
     fetchParkingLots();
-  }, []);
+  }, [authChecked]);
+
+  // Show loading screen while checking authentication
+  if (!authChecked) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-slate-100">
+        <div className="text-center">
+          <Loader2 className="h-8 w-8 animate-spin text-indigo-600 mx-auto mb-2" />
+          <p className="text-sm text-slate-600">Verifying access...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="relative h-screen flex flex-col">
