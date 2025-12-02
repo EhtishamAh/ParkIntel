@@ -52,30 +52,60 @@ export default function OwnerDashboard() {
     setConfirmDialog({
       open: true,
       title: "Delete Parking Lot",
-      description: `Are you sure you want to delete "${lotName}"? This will also delete all associated parking spots.`,
+      description: `Are you sure you want to delete "${lotName}"? This will permanently delete all associated data including parking spots, reservations, sessions, and operator assignments.`,
       onConfirm: async () => {
         setDeletingLotId(lotId);
         try {
-          // Delete the lot (spots will cascade delete due to foreign key)
-          const { error } = await supabase
+          // Get current user
+          const { data: userData } = await supabase.auth.getUser();
+          if (!userData?.user) {
+            throw new Error("User not authenticated");
+          }
+
+          // Verify ownership before deletion
+          const { data: lotData, error: fetchError } = await supabase
+            .from("ParkingLots")
+            .select("owner_id")
+            .eq("id", lotId)
+            .single();
+
+          if (fetchError) {
+            console.error("Fetch error:", fetchError);
+            throw new Error(`Failed to verify lot ownership: ${fetchError.message}`);
+          }
+
+          if (lotData.owner_id !== userData.user.id) {
+            throw new Error("You don't have permission to delete this parking lot");
+          }
+
+          // Delete the lot (all related data will cascade delete due to foreign key constraints)
+          const { error: deleteError, data: deleteData } = await supabase
             .from("ParkingLots")
             .delete()
-            .eq("id", lotId);
+            .eq("id", lotId)
+            .eq("owner_id", userData.user.id); // Double-check ownership in query
 
-          if (error) throw error;
+          if (deleteError) {
+            console.error("Delete error details:", deleteError);
+            throw new Error(`Database error: ${deleteError.message || "Failed to delete parking lot"}`);
+          }
+
+          console.log("✅ Parking lot deleted successfully");
 
           // Remove from local state
           setLots(lots.filter(lot => lot.id !== lotId));
+          
           addToast({
             title: "Success",
-            description: `Parking lot "${lotName}" deleted successfully`,
+            description: `Parking lot "${lotName}" and all associated data deleted successfully`,
             variant: "success",
           });
         } catch (error: unknown) {
           console.error("Delete error:", error);
+          const errorMessage = error instanceof Error ? error.message : "Failed to delete parking lot. Please try again.";
           addToast({
-            title: "Error",
-            description: error instanceof Error ? error.message : "Failed to delete parking lot",
+            title: "Deletion Failed",
+            description: errorMessage,
             variant: "error",
           });
         } finally {
