@@ -3,7 +3,7 @@
 import { useEffect, useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
-import { LogOut, Loader2, Car, MapPin, Clock, DollarSign, AlertCircle, CheckCircle2, Maximize2, Minimize2, RefreshCw, TrendingUp, Activity } from "lucide-react";
+import { LogOut, Loader2, Car, MapPin, Clock, DollarSign, AlertCircle, CheckCircle2, Maximize2, Minimize2, RefreshCw, TrendingUp, Activity, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 type ParkingSpot = {
@@ -16,6 +16,8 @@ type ParkingSpot = {
   y_coord: number;
   rotation: number | null;
   created_at?: string;
+  status?: 'available' | 'reserved' | 'occupied';
+  reserved_plate?: string | null;
 };
 
 type ParkingSession = {
@@ -28,6 +30,17 @@ type ParkingSession = {
   fee_charged: number | null;
   status: string | null;
   created_at?: string;
+};
+
+type PreBooking = {
+  id: string;
+  lot_id: number;
+  plate_number: string;
+  reservation_fee: number | null;
+  status: string;
+  expires_at: string;
+  created_at: string;
+  user_id: string | null;
 };
 
 type ParkingLot = {
@@ -61,6 +74,9 @@ export default function OperatorDashboard() {
   const [selectedSpot, setSelectedSpot] = useState<ParkingSpot | null>(null);
   const [numberPlate, setNumberPlate] = useState("");
   const [processing, setProcessing] = useState(false);
+  const [hadPreBooking, setHadPreBooking] = useState(false);
+  const [reservations, setReservations] = useState<PreBooking[]>([]);
+  const [showReservations, setShowReservations] = useState(false);
   
   // Canvas ref for spot rendering
   const canvasContainerRef = useRef<HTMLDivElement>(null);
@@ -87,7 +103,41 @@ export default function OperatorDashboard() {
       .order("label", { ascending: true });
 
     if (data) {
-      setSpots(data as ParkingSpot[]);
+      // Fetch all active pre-bookings for this lot once
+      const now = new Date().toISOString();
+      console.log("Fetching pre-bookings for lot_id:", lotId, "at time:", now);
+      
+      const { data: allPreBookings, error: preBookingError } = await supabase
+        .from("pre_bookings")
+        .select("plate_number, expires_at")
+        .eq("lot_id", lotId)
+        .eq("status", "active")
+        .gte("expires_at", now);
+
+      if (preBookingError) {
+        console.error("Error fetching pre-bookings for spots:", preBookingError);
+      }
+      
+      console.log("Pre-bookings found for lot", lotId, ":", allPreBookings);
+
+      // Mark spots with status
+      // Note: Pre-bookings are for the lot, not specific spots
+      // Spots remain "available" until driver checks in
+      const spotsWithStatus = data.map((spot) => {
+        if (spot.is_occupied) {
+          return {
+            ...spot,
+            status: 'occupied' as const,
+          };
+        } else {
+          return {
+            ...spot,
+            status: 'available' as const,
+          };
+        }
+      });
+      
+      setSpots(spotsWithStatus as ParkingSpot[]);
     }
   };
   
@@ -103,12 +153,72 @@ export default function OperatorDashboard() {
       setSessions(data as ParkingSession[]);
     }
   };
+
+  const fetchReservations = async (lotId: number) => {
+    const now = new Date().toISOString();
+    console.log("=== Fetching Reservations ===");
+    console.log("Lot ID:", lotId);
+    console.log("Current time (ISO):", now);
+    console.log("Current time (local):", new Date().toLocaleString());
+    
+    // First, check all pre-bookings for this lot (for debugging)
+    const { data: allBookings, error: allError } = await supabase
+      .from("pre_bookings")
+      .select("*")
+      .eq("lot_id", lotId);
+    
+    console.log("Query: SELECT * FROM pre_bookings WHERE lot_id =", lotId);
+    console.log("All pre-bookings for this lot:", allBookings);
+    console.log("Count:", allBookings?.length || 0);
+    if (allError) console.error("Error fetching all bookings:", allError);
+    
+    // Now fetch only active, non-expired ones
+    console.log("Filtering for: status = 'active' AND expires_at >=", now);
+    const { data, error } = await supabase
+      .from("pre_bookings")
+      .select("*")
+      .eq("lot_id", lotId)
+      .eq("status", "active")
+      .gte("expires_at", now)
+      .order("expires_at", { ascending: true });
+
+    if (error) {
+      console.error("Error fetching reservations:", error);
+    }
+
+    console.log("Active, non-expired reservations:", data);
+    console.log("Count of active reservations:", data?.length || 0);
+    
+    // Show details of each reservation
+    if (allBookings && allBookings.length > 0) {
+      allBookings.forEach((booking: any, idx: number) => {
+        const expiresAt = new Date(booking.expires_at);
+        const isExpired = expiresAt < new Date();
+        console.log(`Booking ${idx + 1}:`, {
+          plate: booking.plate_number,
+          status: booking.status,
+          expires_at: booking.expires_at,
+          expires_local: expiresAt.toLocaleString(),
+          is_expired: isExpired,
+          time_remaining_minutes: Math.floor((expiresAt.getTime() - Date.now()) / 60000)
+        });
+      });
+    }
+    console.log("=== End Fetching Reservations ===");
+
+    if (data) {
+      setReservations(data);
+    } else {
+      setReservations([]);
+    }
+  };
   
   const handleRefresh = async () => {
     if (!selectedLot) return;
     setRefreshing(true);
     await fetchSpots(selectedLot.id);
     await fetchActiveSessions(selectedLot.id);
+    await fetchReservations(selectedLot.id);
     setTimeout(() => setRefreshing(false), 500);
   };
 
@@ -133,10 +243,13 @@ export default function OperatorDashboard() {
       const { data: lotsData } = await lotsQuery.order("id", { ascending: true });
 
       if (lotsData && lotsData.length > 0) {
+        console.log("Loading lots:", lotsData);
+        console.log("Selected lot ID:", lotsData[0].id);
         setLots(lotsData as ParkingLot[]);
         setSelectedLot(lotsData[0] as ParkingLot);
         fetchSpots(lotsData[0].id);
         fetchActiveSessions(lotsData[0].id);
+        fetchReservations(lotsData[0].id);
       }
       setLoading(false);
     };
@@ -148,16 +261,37 @@ export default function OperatorDashboard() {
       if (selectedLot) {
         fetchSpots(selectedLot.id);
         fetchActiveSessions(selectedLot.id);
+        fetchReservations(selectedLot.id);
       }
     }, 30000);
     
     return () => clearInterval(interval);
   }, [router, selectedLot]);
 
-  const handleSpotClick = (spot: ParkingSpot) => {
+  const handleSpotClick = async (spot: ParkingSpot) => {
     setSelectedSpot(spot);
     setNumberPlate(spot.current_plate || "");
     setModalType(spot.is_occupied ? "checkout" : "checkin");
+    
+    // If checking out, check for pre-booking
+    if (spot.is_occupied && selectedLot) {
+      const session = sessions.find((s) => s.spot_id === spot.id && s.status === "active");
+      if (session) {
+        const { data: preBooking } = await supabase
+          .from("pre_bookings")
+          .select("id")
+          .eq("lot_id", selectedLot.id)
+          .eq("plate_number", session.plate_number)
+          .eq("status", "converted")
+          .maybeSingle();
+        setHadPreBooking(!!preBooking);
+      } else {
+        setHadPreBooking(false);
+      }
+    } else {
+      setHadPreBooking(false);
+    }
+    
     setShowModal(true);
   };
 
@@ -166,6 +300,16 @@ export default function OperatorDashboard() {
     
     setProcessing(true);
     const now = new Date().toISOString();
+
+    // Check if this spot was pre-booked by this vehicle
+    const { data: preBooking } = await supabase
+      .from("pre_bookings")
+      .select("id, reservation_fee")
+      .eq("lot_id", selectedLot.id)
+      .eq("plate_number", numberPlate.toUpperCase().trim())
+      .eq("status", "active")
+      .gte("expires_at", now)
+      .maybeSingle();
 
     // Update spot as occupied
     const { error: spotError } = await supabase
@@ -194,6 +338,14 @@ export default function OperatorDashboard() {
       });
 
     if (!sessionError) {
+      // If pre-booked, mark pre-booking as converted
+      if (preBooking) {
+        await supabase
+          .from("pre_bookings")
+          .update({ status: "converted" })
+          .eq("id", preBooking.id);
+      }
+      
       await fetchSpots(selectedLot.id);
       await fetchActiveSessions(selectedLot.id);
       setShowModal(false);
@@ -209,13 +361,23 @@ export default function OperatorDashboard() {
     return sessions.find(s => s.spot_id === spotId && s.status === "active");
   };
 
-  const calculateFee = (checkInTime: string) => {
+  const calculateFee = (checkInTime: string, includeReservationFee: boolean = false) => {
     if (!selectedLot) return 0;
     const checkIn = new Date(checkInTime);
     const now = new Date();
-    const durationHours = (now.getTime() - checkIn.getTime()) / (1000 * 60 * 60);
+    const durationMs = now.getTime() - checkIn.getTime();
+    const durationHours = durationMs / (1000 * 60 * 60);
     const pricePerHour = selectedLot.price_per_hour || selectedLot.base_price || 50;
-    const fee = Math.ceil(durationHours * pricePerHour);
+    
+    // Round UP to next full hour (ceiling) - minimum 1 hour
+    const hoursToCharge = Math.max(1, Math.ceil(durationHours));
+    let fee = hoursToCharge * pricePerHour;
+    
+    // Add 20% reservation fee if spot was pre-booked
+    if (includeReservationFee) {
+      fee += Math.round(pricePerHour * 0.20);
+    }
+    
     return fee;
   };
 
@@ -227,7 +389,18 @@ export default function OperatorDashboard() {
 
     setProcessing(true);
     const now = new Date().toISOString();
-    const fee = calculateFee(session.check_in_time);
+    
+    // Check if this vehicle had a pre-booking (to add 20% fee)
+    const { data: preBooking } = await supabase
+      .from("pre_bookings")
+      .select("id, reservation_fee")
+      .eq("lot_id", selectedLot.id)
+      .eq("plate_number", session.plate_number)
+      .eq("status", "converted")
+      .maybeSingle();
+    
+    const hadPreBooking = !!preBooking;
+    const fee = calculateFee(session.check_in_time, hadPreBooking);
 
     // Update spot as available
     const { error: spotError } = await supabase
@@ -265,8 +438,9 @@ export default function OperatorDashboard() {
     setProcessing(false);
   };
 
-  const occupiedCount = spots.filter((s) => s.is_occupied).length;
-  const availableCount = spots.length - occupiedCount;
+  const occupiedCount = spots.filter((s) => s.status === 'occupied').length;
+  const reservedCount = reservations.length; // Count of active pre-bookings
+  const availableCount = spots.filter((s) => s.status === 'available').length;
   const occupancyRate = spots.length > 0 ? Math.round((occupiedCount / spots.length) * 100) : 0;
 
   return (
@@ -302,6 +476,15 @@ export default function OperatorDashboard() {
                 className="border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-white"
               >
                 <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
+              </Button>
+              <Button
+                onClick={() => setShowReservations(true)}
+                variant="outline"
+                size="sm"
+                className="border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/50"
+              >
+                <Clock className="mr-2 h-4 w-4" />
+                Reservations ({reservations.length})
               </Button>
               <Button
                 onClick={handleLogout}
@@ -348,6 +531,7 @@ export default function OperatorDashboard() {
                       setSelectedLot(lot);
                       fetchSpots(lot.id);
                       fetchActiveSessions(lot.id);
+                      fetchReservations(lot.id);
                     }
                   }}
                   className="w-full px-5 py-3 bg-white dark:bg-slate-950/50 border border-slate-300 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white text-lg font-medium focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all"
@@ -364,7 +548,7 @@ export default function OperatorDashboard() {
             {selectedLot && (
               <>
                 {/* Stats Dashboard */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6 mb-8">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 sm:gap-6 mb-8">
                   {/* Total Spots */}
                   <div className="group relative overflow-hidden bg-linear-to-br from-white to-slate-50 dark:from-slate-900/50 dark:to-slate-900/30 backdrop-blur-sm border border-slate-200 dark:border-slate-700/50 rounded-2xl p-6 hover:border-slate-300 dark:hover:border-slate-600/50 transition-all hover:shadow-xl shadow-sm">
                     <div className="absolute top-0 right-0 w-32 h-32 bg-slate-500/5 rounded-full -mr-16 -mt-16 group-hover:scale-150 transition-transform duration-500"></div>
@@ -407,6 +591,21 @@ export default function OperatorDashboard() {
                       </div>
                       <div className="text-4xl font-bold text-rose-600 dark:text-rose-400 mb-1">{occupiedCount}</div>
                       <div className="text-xs text-rose-700 dark:text-rose-600">Currently parked</div>
+                    </div>
+                  </div>
+
+                  {/* Reserved */}
+                  <div className="group relative overflow-hidden bg-linear-to-br from-amber-50 to-yellow-100/50 dark:from-amber-950/40 dark:to-yellow-900/20 backdrop-blur-sm border border-amber-200 dark:border-amber-800/50 rounded-2xl p-6 hover:border-amber-300 dark:hover:border-amber-700/50 transition-all hover:shadow-xl shadow-sm hover:shadow-amber-500/10">
+                    <div className="absolute top-0 right-0 w-32 h-32 bg-amber-500/10 rounded-full -mr-16 -mt-16 group-hover:scale-150 transition-transform duration-500"></div>
+                    <div className="relative">
+                      <div className="flex items-center justify-between mb-3">
+                        <span className="text-sm font-medium text-amber-700 dark:text-amber-400">Reserved</span>
+                        <div className="w-10 h-10 rounded-xl bg-amber-100 dark:bg-amber-500/20 flex items-center justify-center">
+                          <Clock className="h-5 w-5 text-amber-600 dark:text-amber-400" />
+                        </div>
+                      </div>
+                      <div className="text-4xl font-bold text-amber-600 dark:text-amber-400 mb-1">{reservedCount}</div>
+                      <div className="text-xs text-amber-700 dark:text-amber-600">Pre-booked</div>
                     </div>
                   </div>
 
@@ -499,38 +698,57 @@ export default function OperatorDashboard() {
                           >
                             <div
                               className={`relative w-full h-full rounded-lg border-3 flex flex-col items-center justify-center font-bold text-xs shadow-lg transition-all ${
-                                (spot.is_occupied === true)
+                                spot.status === 'occupied'
                                   ? 'bg-linear-to-br from-rose-100 to-rose-200 dark:from-rose-950/80 dark:to-rose-900/60 border-rose-400 dark:border-rose-500/60 text-rose-800 dark:text-rose-100 shadow-rose-300/40 dark:shadow-rose-500/20 hover:shadow-rose-400/60 dark:hover:shadow-rose-500/40'
+                                  : spot.status === 'reserved'
+                                  ? 'bg-linear-to-br from-amber-100 to-amber-200 dark:from-amber-950/80 dark:to-amber-900/60 border-amber-400 dark:border-amber-500/60 text-amber-800 dark:text-amber-100 shadow-amber-300/40 dark:shadow-amber-500/20 hover:shadow-amber-400/60 dark:hover:shadow-amber-500/40'
                                   : 'bg-linear-to-br from-emerald-100 to-emerald-200 dark:from-emerald-950/80 dark:to-emerald-900/60 border-emerald-400 dark:border-emerald-500/60 text-emerald-800 dark:text-emerald-100 shadow-emerald-300/40 dark:shadow-emerald-500/20 hover:shadow-emerald-400/60 dark:hover:shadow-emerald-500/40'
                               }`}
                             >
                               {/* Spot Label */}
-                              <div className={`text-sm font-extrabold mb-1 ${spot.is_occupied ? 'text-rose-900 dark:text-rose-200' : 'text-emerald-900 dark:text-emerald-200'}`}>
+                              <div className={`text-sm font-extrabold mb-1 ${
+                                spot.status === 'occupied' ? 'text-rose-900 dark:text-rose-200' :
+                                spot.status === 'reserved' ? 'text-amber-900 dark:text-amber-200' :
+                                'text-emerald-900 dark:text-emerald-200'
+                              }`}>
                                 {spot.label}
                               </div>
                               
                               {/* Status Icon */}
                               <div className={`w-6 h-6 rounded-full flex items-center justify-center ${
-                                spot.is_occupied ? 'bg-rose-300 dark:bg-rose-500/30' : 'bg-emerald-300 dark:bg-emerald-500/30'
+                                spot.status === 'occupied' ? 'bg-rose-300 dark:bg-rose-500/30' :
+                                spot.status === 'reserved' ? 'bg-amber-300 dark:bg-amber-500/30' :
+                                'bg-emerald-300 dark:bg-emerald-500/30'
                               }`}>
-                                {spot.is_occupied ? (
+                                {spot.status === 'occupied' ? (
                                   <Car className="w-3 h-3" />
+                                ) : spot.status === 'reserved' ? (
+                                  <Clock className="w-3 h-3" />
                                 ) : (
                                   <CheckCircle2 className="w-3 h-3" />
                                 )}
                               </div>
                               
                               {/* Plate Number (if occupied) */}
-                              {spot.is_occupied && spot.current_plate && (
+                              {spot.status === 'occupied' && spot.current_plate && (
                                 <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 translate-y-full mt-1 px-2 py-0.5 bg-white dark:bg-slate-900/90 border border-rose-300 dark:border-rose-500/30 rounded text-[10px] font-mono text-rose-700 dark:text-rose-300 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity shadow-lg">
                                   {spot.current_plate}
                                 </div>
                               )}
                               
+                              {/* Plate Number (if reserved) */}
+                              {spot.status === 'reserved' && spot.reserved_plate && (
+                                <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 translate-y-full mt-1 px-2 py-0.5 bg-white dark:bg-slate-900/90 border border-amber-300 dark:border-amber-500/30 rounded text-[10px] font-mono text-amber-700 dark:text-amber-300 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity shadow-lg">
+                                  {spot.reserved_plate}
+                                </div>
+                              )}
+                              
                               {/* Hover Effect Glow */}
                               <div className={`absolute inset-0 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity ${
-                                spot.is_occupied 
-                                  ? 'bg-rose-500/10 ring-2 ring-rose-400 dark:ring-rose-500/30' 
+                                spot.status === 'occupied'
+                                  ? 'bg-rose-500/10 ring-2 ring-rose-400 dark:ring-rose-500/30'
+                                  : spot.status === 'reserved'
+                                  ? 'bg-amber-500/10 ring-2 ring-amber-400 dark:ring-amber-500/30'
                                   : 'bg-emerald-500/10 ring-2 ring-emerald-400 dark:ring-emerald-500/30'
                               }`}></div>
                             </div>
@@ -545,6 +763,10 @@ export default function OperatorDashboard() {
                           <div className="flex items-center gap-2">
                             <div className="w-4 h-4 rounded bg-linear-to-br from-emerald-100 to-emerald-200 dark:from-emerald-950 dark:to-emerald-900 border border-emerald-400 dark:border-emerald-500"></div>
                             <span className="text-slate-600 dark:text-slate-400">Available</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <div className="w-4 h-4 rounded bg-linear-to-br from-amber-100 to-amber-200 dark:from-amber-950 dark:to-amber-900 border border-amber-400 dark:border-amber-500"></div>
+                            <span className="text-slate-600 dark:text-slate-400">Reserved</span>
                           </div>
                           <div className="flex items-center gap-2">
                             <div className="w-4 h-4 rounded bg-linear-to-br from-rose-100 to-rose-200 dark:from-rose-950 dark:to-rose-900 border border-rose-400 dark:border-rose-500"></div>
@@ -650,8 +872,19 @@ export default function OperatorDashboard() {
                     </div>
                     <div className="flex items-center gap-3 text-sm text-slate-600 dark:text-slate-400 mt-2">
                       <DollarSign className="w-4 h-4" />
-                      <span>Rate: <span className="text-emerald-600 dark:text-emerald-400 font-semibold">Rs. {selectedLot.price_per_hour}/hour</span></span>
+                      <span>Rate: <span className="text-emerald-600 dark:text-emerald-400 font-semibold">Rs. {selectedLot.price_per_hour} per hour</span></span>
                     </div>
+                    {selectedSpot?.status === 'reserved' && selectedSpot?.reserved_plate && (
+                      <div className="mt-3 pt-3 border-t border-slate-200 dark:border-slate-700">
+                        <div className="flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400">
+                          <Clock className="w-3 h-3" />
+                          <span className="font-semibold">Pre-booked by: {selectedSpot.reserved_plate}</span>
+                        </div>
+                        <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                          20% reservation fee (Rs. {Math.round((selectedLot.price_per_hour || selectedLot.base_price || 50) * 0.20)}) will be added to checkout
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               ) : (
@@ -664,7 +897,8 @@ export default function OperatorDashboard() {
                     const durationMs = checkInTime ? currentTime.getTime() - checkInTime.getTime() : 0;
                     const durationHours = durationMs / (1000 * 60 * 60);
                     const durationMinutes = Math.floor(durationMs / (1000 * 60));
-                    const fee = session ? calculateFee(session.check_in_time) : 0;
+                    const hoursToCharge = Math.max(1, Math.ceil(durationHours));
+                    const fee = session ? calculateFee(session.check_in_time, hadPreBooking) : 0;
                     
                     return (
                       <>
@@ -697,8 +931,18 @@ export default function OperatorDashboard() {
                             </div>
                             <div className="flex justify-between items-center mt-2">
                               <span className="text-sm text-slate-600 dark:text-slate-400">Rate</span>
-                              <span className="text-slate-900 dark:text-white font-semibold">Rs. {selectedLot.price_per_hour}/hour</span>
+                              <span className="text-slate-900 dark:text-white font-semibold">Rs. {selectedLot.price_per_hour} per hour</span>
                             </div>
+                            <div className="flex justify-between items-center mt-2">
+                              <span className="text-sm text-slate-600 dark:text-slate-400">Hours Charged</span>
+                              <span className="text-slate-900 dark:text-white font-semibold">{hoursToCharge} {hoursToCharge === 1 ? 'hour' : 'hours'}</span>
+                            </div>
+                            {hadPreBooking && (
+                              <div className="flex justify-between items-center mt-2 pt-2 border-t border-amber-200 dark:border-amber-800">
+                                <span className="text-sm text-amber-600 dark:text-amber-400">Reservation Fee (20%)</span>
+                                <span className="text-amber-600 dark:text-amber-400 font-semibold">+ Rs. {Math.round((selectedLot.price_per_hour || selectedLot.base_price || 50) * 0.20)}</span>
+                              </div>
+                            )}
                           </div>
                         </div>
                         
@@ -762,6 +1006,132 @@ export default function OperatorDashboard() {
                   </>
                 )}
               </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Reservations Modal */}
+      {showReservations && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <div className="relative bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-200 dark:border-slate-800 w-full max-w-4xl max-h-[80vh] overflow-hidden">
+            <div className="sticky top-0 bg-linear-to-r from-amber-500 to-orange-500 p-6 border-b border-amber-400/20">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-2xl font-bold text-white flex items-center gap-3">
+                    <Clock className="h-7 w-7" />
+                    Active Reservations
+                  </h2>
+                  <p className="text-amber-100 text-sm mt-1">Pre-booked parking spots awaiting arrival</p>
+                </div>
+                <button
+                  onClick={() => setShowReservations(false)}
+                  className="text-white hover:bg-white/20 rounded-full p-2 transition-colors"
+                >
+                  <X className="h-6 w-6" />
+                </button>
+              </div>
+            </div>
+
+            <div className="p-6 overflow-y-auto max-h-[calc(80vh-140px)]">
+              {reservations.length === 0 ? (
+                <div className="text-center py-16">
+                  <Clock className="h-16 w-16 text-slate-300 dark:text-slate-700 mx-auto mb-4" />
+                  <p className="text-slate-500 dark:text-slate-400 text-lg">No active reservations</p>
+                  <p className="text-slate-400 dark:text-slate-600 text-sm mt-2">Reserved spots will appear here</p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {reservations.map((reservation) => {
+                    const expiresAt = new Date(reservation.expires_at);
+                    const now = new Date();
+                    const minutesRemaining = Math.max(0, Math.floor((expiresAt.getTime() - now.getTime()) / 60000));
+                    const isExpiringSoon = minutesRemaining <= 10;
+
+                    return (
+                      <div
+                        key={reservation.id}
+                        className={`border-2 rounded-2xl p-5 transition-all hover:shadow-lg ${
+                          isExpiringSoon
+                            ? 'border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-950/20'
+                            : 'border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/20'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between mb-4">
+                          <div className="flex items-center gap-3">
+                            <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${
+                              isExpiringSoon ? 'bg-red-500' : 'bg-amber-500'
+                            }`}>
+                              <Car className="h-6 w-6 text-white" />
+                            </div>
+                            <div>
+                              <div className="text-lg font-bold text-slate-900 dark:text-white font-mono">
+                                {reservation.plate_number}
+                              </div>
+                              <div className="text-xs text-slate-600 dark:text-slate-400">
+                                Reserved at {new Date(reservation.created_at).toLocaleTimeString()}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className={`px-4 py-2 rounded-full font-bold text-sm ${
+                            isExpiringSoon
+                              ? 'bg-red-500 text-white'
+                              : minutesRemaining <= 20
+                              ? 'bg-orange-500 text-white'
+                              : 'bg-amber-500 text-white'
+                          }`}>
+                            {minutesRemaining}m remaining
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-4">
+                          <div className="bg-white dark:bg-slate-800 rounded-xl p-3">
+                            <div className="text-xs text-slate-600 dark:text-slate-400 mb-1 flex items-center gap-1">
+                              <DollarSign className="h-3 w-3" />
+                              Reservation Fee
+                            </div>
+                            <div className="text-lg font-bold text-amber-600 dark:text-amber-400">
+                              Rs. {reservation.reservation_fee || 0}
+                            </div>
+                          </div>
+
+                          <div className="bg-white dark:bg-slate-800 rounded-xl p-3">
+                            <div className="text-xs text-slate-600 dark:text-slate-400 mb-1 flex items-center gap-1">
+                              <Clock className="h-3 w-3" />
+                              Expires At
+                            </div>
+                            <div className="text-sm font-bold text-slate-900 dark:text-white">
+                              {expiresAt.toLocaleTimeString()}
+                            </div>
+                          </div>
+
+                          <div className="bg-white dark:bg-slate-800 rounded-xl p-3">
+                            <div className="text-xs text-slate-600 dark:text-slate-400 mb-1 flex items-center gap-1">
+                              <Activity className="h-3 w-3" />
+                              Status
+                            </div>
+                            <div className={`text-sm font-bold ${
+                              isExpiringSoon ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'
+                            }`}>
+                              {isExpiringSoon ? 'Expiring Soon' : 'Active'}
+                            </div>
+                          </div>
+                        </div>
+
+                        {isExpiringSoon && (
+                          <div className="mt-3 p-3 bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-lg flex items-start gap-2">
+                            <AlertCircle className="h-5 w-5 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
+                            <div className="text-sm text-red-700 dark:text-red-300">
+                              <span className="font-semibold">Urgent:</span> This reservation will expire in {minutesRemaining} minutes. Customer should arrive soon.
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
         </div>

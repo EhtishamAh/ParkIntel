@@ -35,6 +35,7 @@ export interface PreBooking {
   lotName: string;
   plateNumber: string;
   pricePerHour: number;
+  reservationFee: number;
   createdAt: number;
   expiresAt: number;
   holdMinutes: number;
@@ -690,6 +691,7 @@ export function SmartParkingMap({
 
     const prediction = predictionLookup.get(selectedLot.id);
     const pricePerHour = prediction?.dynamicPrice ?? selectedLot.base_price;
+    const reservationFee = Math.round(pricePerHour * 0.20);
     const travelMinutes = travelEstimate ? Math.ceil(travelEstimate.durationValue / 60) : 20;
     // Hold duration is 2x travel time (owner-configurable in future)
     const graceMinutes = travelMinutes * 2;
@@ -701,6 +703,7 @@ export function SmartParkingMap({
       lotName: selectedLot.name ?? "Parking Lot",
       plateNumber: plateInput.trim().toUpperCase(),
       pricePerHour,
+      reservationFee,
       createdAt: Date.now(),
       expiresAt,
       holdMinutes: graceMinutes,
@@ -709,23 +712,25 @@ export function SmartParkingMap({
 
     setPreBookings((current) => [...current, booking]);
     setPlateInput("");
-    setStatusMessage(`✓ Reserved at ${booking.lotName} for ${graceMinutes} minutes`);
+    setStatusMessage(`✓ Reserved at ${booking.lotName} for ${graceMinutes} minutes (Fee: Rs. ${reservationFee})`);
     setErrorMessage(null);
     
     // Auto-dismiss success message
     setTimeout(() => setStatusMessage(null), 5000);
 
-    // Fire-and-forget persistence placeholder (will be hardened once backend endpoint exists)
+    // Save pre-booking to database
     try {
-      await supabase.from("parking_sessions").insert({
+      const { data: { user } } = await supabase.auth.getUser();
+      await supabase.from("pre_bookings").insert({
         lot_id: booking.lotId,
         plate_number: booking.plateNumber,
-        status: "reserved",
-        check_in_time: new Date().toISOString(),
-        spot_id: null,
+        reservation_fee: reservationFee,
+        status: "active",
+        expires_at: new Date(booking.expiresAt).toISOString(),
+        user_id: user?.id || null,
       });
     } catch (err) {
-      console.warn("Pre-book persistence failed (will retry when backend ready)", err);
+      console.error("Pre-booking save failed:", err);
     }
   };
 
@@ -1088,6 +1093,22 @@ export function SmartParkingMap({
                   </div>
                   <p className="mt-2 text-xs text-indigo-600/80">
                     Auto-calculated: 2× estimated travel time {travelEstimate && `(${travelEstimate.durationText} × 2)`}
+                  </p>
+                </div>
+
+                {/* Reservation fee info */}
+                <div className="rounded-2xl border border-amber-200 bg-linear-to-br from-amber-50 to-orange-50 p-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-sm text-amber-700">
+                      <Banknote className="h-4 w-4" />
+                      <span className="font-medium">Pre-booking Fee</span>
+                    </div>
+                    <span className="rounded-full bg-amber-600 px-3 py-1 text-sm font-bold text-white">
+                      Rs. {Math.round((predictionLookup.get(selectedLot.id)?.dynamicPrice ?? selectedLot.base_price) * 0.20)}
+                    </span>
+                  </div>
+                  <p className="mt-2 text-xs text-amber-600/80">
+                    20% of hourly rate (Rs. {predictionLookup.get(selectedLot.id)?.dynamicPrice ?? selectedLot.base_price}/hr) - Charged now
                   </p>
                 </div>
 

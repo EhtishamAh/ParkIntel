@@ -65,6 +65,47 @@ export type Database = {
           },
         ]
       }
+      pre_bookings: {
+        Row: {
+          id: string
+          lot_id: number
+          plate_number: string
+          reservation_fee: number | null
+          status: string
+          expires_at: string
+          created_at: string
+          user_id: string | null
+        }
+        Insert: {
+          id?: string
+          lot_id: number
+          plate_number: string
+          reservation_fee?: number | null
+          status?: string
+          expires_at: string
+          created_at?: string
+          user_id?: string | null
+        }
+        Update: {
+          id?: string
+          lot_id?: number
+          plate_number?: string
+          reservation_fee?: number | null
+          status?: string
+          expires_at?: string
+          created_at?: string
+          user_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "pre_bookings_lot_id_fkey"
+            columns: ["lot_id"]
+            isOneToOne: false
+            referencedRelation: "ParkingLots"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       parking_spots: {
         Row: {
           created_at: string

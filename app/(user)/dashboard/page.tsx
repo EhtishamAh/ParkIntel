@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { MapPin, Clock, Calendar, DollarSign, LogOut, Loader2, Search, Filter, TrendingUp, Settings } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 
 type ParkingSession = {
   id: string;
@@ -17,12 +18,27 @@ type ParkingSession = {
   status: string;
 };
 
+type Reservation = {
+  id: string;
+  lot_id: number;
+  plate_number: string;
+  reservation_fee: number | null;
+  status: string;
+  expires_at: string;
+  created_at: string;
+  lot_name?: string;
+  lot_address?: string;
+};
+
 export default function DriverDashboard() {
   const router = useRouter();
   const [sessions, setSessions] = useState<ParkingSession[]>([]);
+  const [reservations, setReservations] = useState<Reservation[]>([]);
   const [loading, setLoading] = useState(true);
   const [loggingOut, setLoggingOut] = useState(false);
   const [filter, setFilter] = useState<"all" | "active" | "completed">("all");
+  const [confirmDialogOpen, setConfirmDialogOpen] = useState(false);
+  const [reservationToCancel, setReservationToCancel] = useState<string | null>(null);
 
   const handleLogout = async () => {
     setLoggingOut(true);
@@ -33,6 +49,28 @@ export default function DriverDashboard() {
       console.error("Logout error:", error);
       setLoggingOut(false);
     }
+  };
+
+  const handleCancelReservation = (reservationId: string) => {
+    setReservationToCancel(reservationId);
+    setConfirmDialogOpen(true);
+  };
+
+  const confirmCancelReservation = async () => {
+    if (!reservationToCancel) return;
+
+    const { error } = await supabase
+      .from("pre_bookings")
+      .update({ status: "cancelled" })
+      .eq("id", reservationToCancel);
+
+    if (!error) {
+      setReservations(reservations.filter((r) => r.id !== reservationToCancel));
+    } else {
+      alert("Failed to cancel reservation");
+    }
+
+    setReservationToCancel(null);
   };
 
   useEffect(() => {
@@ -68,6 +106,38 @@ export default function DriverDashboard() {
       if (data) {
         setSessions(data);
       }
+
+      // Fetch active reservations
+      const now = new Date().toISOString();
+      console.log("=== Driver Dashboard: Fetching Reservations ===");
+      console.log("Current time (UTC):", now);
+      console.log("Current time (local):", new Date().toLocaleString());
+      
+      const { data: reservationsData, error: resError } = await supabase
+        .from("pre_bookings")
+        .select(`
+          *,
+          ParkingLots:lot_id (name, address)
+        `)
+        .eq("user_id", userData.user.id)
+        .eq("status", "active")
+        .gte("expires_at", now)
+        .order("created_at", { ascending: false });
+
+      console.log("Fetched reservations:", reservationsData);
+      console.log("Reservation count:", reservationsData?.length || 0);
+      if (resError) console.error("Error fetching reservations:", resError);
+
+      if (reservationsData) {
+        const formattedReservations = reservationsData.map((res: any) => ({
+          ...res,
+          lot_name: res.ParkingLots?.name,
+          lot_address: res.ParkingLots?.address,
+        }));
+        console.log("Formatted reservations:", formattedReservations);
+        setReservations(formattedReservations);
+      }
+
       setLoading(false);
     };
 
@@ -172,6 +242,104 @@ export default function DriverDashboard() {
             </div>
           </div>
         </div>
+
+        {/* Active Reservations */}
+        {reservations.length > 0 && (
+          <div className="bg-gradient-to-br from-amber-50 to-orange-50 border-2 border-amber-200 rounded-2xl p-6 shadow-sm mb-8">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-xl bg-amber-500 flex items-center justify-center">
+                <Clock className="h-5 w-5 text-white" />
+              </div>
+              <div>
+                <h2 className="text-lg font-bold text-slate-900">Active Reservations</h2>
+                <p className="text-sm text-slate-600">Your pre-booked parking spots</p>
+              </div>
+            </div>
+
+            <div className="grid gap-4">
+              {reservations.map((reservation) => {
+                const expiresAt = new Date(reservation.expires_at);
+                const now = new Date();
+                const minutesRemaining = Math.max(0, Math.floor((expiresAt.getTime() - now.getTime()) / 60000));
+                const isExpiringSoon = minutesRemaining <= 10;
+
+                return (
+                  <div
+                    key={reservation.id}
+                    className={`bg-white rounded-xl border-2 p-5 transition-all ${
+                      isExpiringSoon ? 'border-red-300' : 'border-amber-300'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between mb-4">
+                      <div className="flex items-center gap-3 flex-1">
+                        <div className="w-12 h-12 rounded-xl bg-indigo-100 flex items-center justify-center">
+                          <MapPin className="h-6 w-6 text-indigo-600" />
+                        </div>
+                        <div>
+                          <div className="text-lg font-bold text-slate-900">
+                            {reservation.lot_name || "Parking Lot"}
+                          </div>
+                          <div className="text-sm text-slate-600">{reservation.lot_address}</div>
+                          <div className="text-xs text-slate-500 mt-1">
+                            Vehicle: <span className="font-mono font-semibold">{reservation.plate_number}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="text-right">
+                        <div className={`px-4 py-2 rounded-full font-bold text-sm mb-2 ${
+                          isExpiringSoon ? 'bg-red-500 text-white' : 'bg-amber-500 text-white'
+                        }`}>
+                          {minutesRemaining}m remaining
+                        </div>
+                        <Button
+                          onClick={() => handleCancelReservation(reservation.id)}
+                          variant="outline"
+                          size="sm"
+                          className="border-red-300 text-red-600 hover:bg-red-50 text-xs"
+                        >
+                          Cancel
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-3">
+                      <div className="bg-slate-50 rounded-lg p-3">
+                        <div className="text-xs text-slate-600 mb-1">Reservation Fee</div>
+                        <div className="text-lg font-bold text-amber-600">
+                          Rs. {reservation.reservation_fee || 0}
+                        </div>
+                      </div>
+
+                      <div className="bg-slate-50 rounded-lg p-3">
+                        <div className="text-xs text-slate-600 mb-1">Reserved At</div>
+                        <div className="text-sm font-semibold text-slate-900">
+                          {new Date(reservation.created_at).toLocaleTimeString()}
+                        </div>
+                      </div>
+
+                      <div className="bg-slate-50 rounded-lg p-3">
+                        <div className="text-xs text-slate-600 mb-1">Expires At</div>
+                        <div className="text-sm font-semibold text-slate-900">
+                          {expiresAt.toLocaleTimeString()}
+                        </div>
+                      </div>
+                    </div>
+
+                    {isExpiringSoon && (
+                      <div className="mt-3 p-3 bg-red-100 border border-red-300 rounded-lg flex items-start gap-2">
+                        <MapPin className="h-5 w-5 text-red-600 shrink-0 mt-0.5" />
+                        <div className="text-sm text-red-700">
+                          <span className="font-semibold">Hurry!</span> Your reservation expires in {minutesRemaining} minutes. Please arrive soon.
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* Filter Tabs */}
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
@@ -307,6 +475,18 @@ export default function DriverDashboard() {
           </div>
         </div>
       </div>
+
+      {/* Confirmation Dialog */}
+      <ConfirmDialog
+        open={confirmDialogOpen}
+        onOpenChange={setConfirmDialogOpen}
+        title="Cancel Reservation"
+        description="Are you sure you want to cancel this reservation? This action cannot be undone."
+        confirmText="Yes, Cancel"
+        cancelText="No, Keep it"
+        variant="destructive"
+        onConfirm={confirmCancelReservation}
+      />
     </div>
   );
 }
