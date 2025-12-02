@@ -103,31 +103,50 @@ export default function OperatorDashboard() {
       .order("label", { ascending: true });
 
     if (data) {
-      // Fetch all active pre-bookings for this lot once
+      // Fetch ONLY active, non-expired pre-bookings for this lot
+      // Exclude 'converted', 'expired', and 'cancelled' bookings
       const now = new Date().toISOString();
-      console.log("Fetching pre-bookings for lot_id:", lotId, "at time:", now);
       
       const { data: allPreBookings, error: preBookingError } = await supabase
         .from("pre_bookings")
-        .select("plate_number, expires_at")
+        .select("plate_number, expires_at, status")
         .eq("lot_id", lotId)
         .eq("status", "active")
         .gte("expires_at", now);
 
       if (preBookingError) {
-        console.error("Error fetching pre-bookings for spots:", preBookingError);
+        console.error("❌ Error fetching pre-bookings:", preBookingError);
       }
       
-      console.log("Pre-bookings found for lot", lotId, ":", allPreBookings);
+      // Double-check: filter out any non-active bookings (safety check)
+      const validPreBookings = allPreBookings?.filter(b => b.status === 'active') || [];
 
       // Mark spots with status
-      // Note: Pre-bookings are for the lot, not specific spots
-      // Spots remain "available" until driver checks in
+      // For each active pre-booking, mark one available spot as reserved
+      const hasActivePreBookings = validPreBookings && validPreBookings.length > 0;
+      let reservedSpotsMarked = 0;
+      const reservedSpotsNeeded = validPreBookings?.length || 0;
+      
+      if (reservedSpotsNeeded > 0) {
+        console.log("📋 Marking reserved spots:", reservedSpotsNeeded, "reservations found");
+        console.log("Active plates:", validPreBookings.map(b => b.plate_number).join(", "));
+      }
+      
       const spotsWithStatus = data.map((spot) => {
         if (spot.is_occupied) {
           return {
             ...spot,
             status: 'occupied' as const,
+          };
+        } else if (hasActivePreBookings && reservedSpotsMarked < reservedSpotsNeeded && !spot.is_occupied) {
+          // Mark available spots as reserved (one per active pre-booking)
+          reservedSpotsMarked++;
+          const reservationForThisSpot = validPreBookings[reservedSpotsMarked - 1];
+          console.log(`  ➜ Spot ${spot.label} marked RESERVED for plate: ${reservationForThisSpot?.plate_number}`);
+          return {
+            ...spot,
+            status: 'reserved' as const,
+            reserved_plate: reservationForThisSpot?.plate_number || null,
           };
         } else {
           return {
@@ -156,24 +175,7 @@ export default function OperatorDashboard() {
 
   const fetchReservations = async (lotId: number) => {
     const now = new Date().toISOString();
-    console.log("=== Fetching Reservations ===");
-    console.log("Lot ID:", lotId);
-    console.log("Current time (ISO):", now);
-    console.log("Current time (local):", new Date().toLocaleString());
     
-    // First, check all pre-bookings for this lot (for debugging)
-    const { data: allBookings, error: allError } = await supabase
-      .from("pre_bookings")
-      .select("*")
-      .eq("lot_id", lotId);
-    
-    console.log("Query: SELECT * FROM pre_bookings WHERE lot_id =", lotId);
-    console.log("All pre-bookings for this lot:", allBookings);
-    console.log("Count:", allBookings?.length || 0);
-    if (allError) console.error("Error fetching all bookings:", allError);
-    
-    // Now fetch only active, non-expired ones
-    console.log("Filtering for: status = 'active' AND expires_at >=", now);
     const { data, error } = await supabase
       .from("pre_bookings")
       .select("*")
@@ -183,28 +185,8 @@ export default function OperatorDashboard() {
       .order("expires_at", { ascending: true });
 
     if (error) {
-      console.error("Error fetching reservations:", error);
+      console.error("❌ Error fetching reservations:", error);
     }
-
-    console.log("Active, non-expired reservations:", data);
-    console.log("Count of active reservations:", data?.length || 0);
-    
-    // Show details of each reservation
-    if (allBookings && allBookings.length > 0) {
-      allBookings.forEach((booking: any, idx: number) => {
-        const expiresAt = new Date(booking.expires_at);
-        const isExpired = expiresAt < new Date();
-        console.log(`Booking ${idx + 1}:`, {
-          plate: booking.plate_number,
-          status: booking.status,
-          expires_at: booking.expires_at,
-          expires_local: expiresAt.toLocaleString(),
-          is_expired: isExpired,
-          time_remaining_minutes: Math.floor((expiresAt.getTime() - Date.now()) / 60000)
-        });
-      });
-    }
-    console.log("=== End Fetching Reservations ===");
 
     if (data) {
       setReservations(data);
@@ -243,8 +225,6 @@ export default function OperatorDashboard() {
       const { data: lotsData } = await lotsQuery.order("id", { ascending: true });
 
       if (lotsData && lotsData.length > 0) {
-        console.log("Loading lots:", lotsData);
-        console.log("Selected lot ID:", lotsData[0].id);
         setLots(lotsData as ParkingLot[]);
         setSelectedLot(lotsData[0] as ParkingLot);
         fetchSpots(lotsData[0].id);
@@ -258,37 +238,52 @@ export default function OperatorDashboard() {
     
     // Auto-refresh every 30 seconds
     const interval = setInterval(() => {
-      if (selectedLot) {
-        fetchSpots(selectedLot.id);
-        fetchActiveSessions(selectedLot.id);
-        fetchReservations(selectedLot.id);
+      const currentLot = JSON.parse(localStorage.getItem('currentLotId') || '0');
+      if (currentLot) {
+        fetchSpots(currentLot);
+        fetchActiveSessions(currentLot);
+        fetchReservations(currentLot);
       }
     }, 30000);
     
     return () => clearInterval(interval);
-  }, [router, selectedLot]);
+  }, [router]);
+
+  // Store lot ID for auto-refresh
+  useEffect(() => {
+    if (selectedLot) {
+      localStorage.setItem('currentLotId', selectedLot.id.toString());
+    }
+  }, [selectedLot]);
 
   const handleSpotClick = async (spot: ParkingSpot) => {
     setSelectedSpot(spot);
-    setNumberPlate(spot.current_plate || "");
     setModalType(spot.is_occupied ? "checkout" : "checkin");
     
-    // If checking out, check for pre-booking
-    if (spot.is_occupied && selectedLot) {
-      const session = sessions.find((s) => s.spot_id === spot.id && s.status === "active");
-      if (session) {
-        const { data: preBooking } = await supabase
-          .from("pre_bookings")
-          .select("id")
-          .eq("lot_id", selectedLot.id)
-          .eq("plate_number", session.plate_number)
-          .eq("status", "converted")
-          .maybeSingle();
-        setHadPreBooking(!!preBooking);
-      } else {
-        setHadPreBooking(false);
+    // If spot is reserved, pre-fill the plate number from reservation
+    if (spot.status === 'reserved' && spot.reserved_plate) {
+      setNumberPlate(spot.reserved_plate);
+      setHadPreBooking(true);
+    } else if (spot.is_occupied) {
+      // If checking out, check for pre-booking
+      setNumberPlate(spot.current_plate || "");
+      if (selectedLot) {
+        const session = sessions.find((s) => s.spot_id === spot.id && s.status === "active");
+        if (session) {
+          const { data: preBooking } = await supabase
+            .from("pre_bookings")
+            .select("id")
+            .eq("lot_id", selectedLot.id)
+            .eq("plate_number", session.plate_number)
+            .eq("status", "converted")
+            .maybeSingle();
+          setHadPreBooking(!!preBooking);
+        } else {
+          setHadPreBooking(false);
+        }
       }
     } else {
+      setNumberPlate("");
       setHadPreBooking(false);
     }
     
@@ -301,22 +296,34 @@ export default function OperatorDashboard() {
     setProcessing(true);
     const now = new Date().toISOString();
 
+    // Normalize plate number: uppercase and remove all spaces for consistent matching
+    const normalizedPlate = numberPlate.toUpperCase().trim().replace(/\s+/g, '');
+    
+    console.log("=== CHECK IN PROCESS ===");
+    console.log("Original plate:", numberPlate);
+    console.log("Normalized plate:", normalizedPlate);
+    console.log("Lot ID:", selectedLot.id);
+    console.log("Current time:", now);
+
     // Check if this spot was pre-booked by this vehicle
-    const { data: preBooking } = await supabase
+    const { data: preBooking, error: preBookingError } = await supabase
       .from("pre_bookings")
-      .select("id, reservation_fee")
+      .select("id, reservation_fee, plate_number, status, expires_at")
       .eq("lot_id", selectedLot.id)
-      .eq("plate_number", numberPlate.toUpperCase().trim())
+      .eq("plate_number", normalizedPlate)
       .eq("status", "active")
       .gte("expires_at", now)
       .maybeSingle();
+
+    console.log("Pre-booking lookup result:", preBooking);
+    if (preBookingError) console.error("Pre-booking lookup error:", preBookingError);
 
     // Update spot as occupied
     const { error: spotError } = await supabase
       .from("parking_spots")
       .update({
         is_occupied: true,
-        current_plate: numberPlate.toUpperCase().trim(),
+        current_plate: normalizedPlate,
       })
       .eq("id", selectedSpot.id);
 
@@ -332,26 +339,71 @@ export default function OperatorDashboard() {
       .insert({
         lot_id: selectedLot.id,
         spot_id: selectedSpot.id,
-        plate_number: numberPlate.toUpperCase().trim(),
+        plate_number: normalizedPlate,
         check_in_time: now,
         status: "active",
       });
 
     if (!sessionError) {
-      // If pre-booked, mark pre-booking as converted
-      if (preBooking) {
-        await supabase
+      // If this was a reserved spot, ALWAYS convert the pre-booking
+      // This ensures the reservation count decreases after check-in
+      if (selectedSpot?.status === 'reserved' || preBooking) {
+        console.log("Converting pre-booking for reserved spot check-in...");
+        
+        // Search for ANY active pre-booking for this lot and plate (ignore expiry for conversion)
+        const { data: matchingBookings, error: searchError } = await supabase
           .from("pre_bookings")
-          .update({ status: "converted" })
-          .eq("id", preBooking.id);
+          .select("id, plate_number, status")
+          .eq("lot_id", selectedLot.id)
+          .eq("plate_number", normalizedPlate)
+          .eq("status", "active");
+        
+        console.log("Found matching bookings:", matchingBookings);
+        if (searchError) console.error("Error searching for bookings:", searchError);
+        
+        if (matchingBookings && matchingBookings.length > 0) {
+          // Convert all matching pre-bookings
+          for (const booking of matchingBookings) {
+            console.log("Converting booking ID:", booking.id);
+            const { error: updateError } = await supabase
+              .from("pre_bookings")
+              .update({ status: "converted" })
+              .eq("id", booking.id);
+            
+            if (updateError) {
+              console.error("❌ Error updating pre-booking status:", updateError);
+            } else {
+              console.log("✓ Pre-booking converted successfully:", booking.id);
+            }
+          }
+          
+          // Verify conversion immediately
+          const { data: verifyData } = await supabase
+            .from("pre_bookings")
+            .select("id, status")
+            .eq("id", matchingBookings[0].id)
+            .single();
+          console.log("🔍 Verification - Status after update:", verifyData?.status);
+        } else {
+          console.warn("⚠️ No matching active pre-booking found to convert for plate:", normalizedPlate);
+          console.log("This means either: 1) plate mismatch, 2) already converted, or 3) not a reserved check-in");
+        }
       }
       
+      // Wait longer to ensure database updates are fully committed and replicated
+      console.log("⏳ Waiting 1 second for database commit...");
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      // Refresh all data
+      console.log("🔄 Refreshing dashboard after check-in...");
       await fetchSpots(selectedLot.id);
       await fetchActiveSessions(selectedLot.id);
+      await fetchReservations(selectedLot.id);
+      
       setShowModal(false);
       setNumberPlate("");
     } else {
-      console.error("Error creating session:", sessionError);
+      console.error("❌ Error creating session:", sessionError);
     }
     
     setProcessing(false);
@@ -390,6 +442,10 @@ export default function OperatorDashboard() {
     setProcessing(true);
     const now = new Date().toISOString();
     
+    console.log("=== CHECKOUT PROCESS ===");
+    console.log("Spot ID:", selectedSpot.id, "| Label:", selectedSpot.label);
+    console.log("Plate:", session.plate_number);
+    
     // Check if this vehicle had a pre-booking (to add 20% fee)
     const { data: preBooking } = await supabase
       .from("pre_bookings")
@@ -401,6 +457,7 @@ export default function OperatorDashboard() {
     
     const hadPreBooking = !!preBooking;
     const fee = calculateFee(session.check_in_time, hadPreBooking);
+    console.log("Fee calculated:", fee, "| Had pre-booking:", hadPreBooking);
 
     // Update spot as available
     const { error: spotError } = await supabase
@@ -412,7 +469,7 @@ export default function OperatorDashboard() {
       .eq("id", selectedSpot.id);
 
     if (spotError) {
-      console.error("Error updating spot:", spotError);
+      console.error("❌ Error updating spot:", spotError);
       setProcessing(false);
       return;
     }
@@ -428,11 +485,14 @@ export default function OperatorDashboard() {
       .eq("id", session.id);
 
     if (!sessionError) {
+      console.log("✓ Checkout completed successfully");
+      console.log("🔄 Refreshing dashboard after checkout...");
       await fetchSpots(selectedLot.id);
       await fetchActiveSessions(selectedLot.id);
+      await fetchReservations(selectedLot.id);
       setShowModal(false);
     } else {
-      console.error("Error updating session:", sessionError);
+      console.error("❌ Error updating session:", sessionError);
     }
     
     setProcessing(false);
@@ -789,16 +849,32 @@ export default function OperatorDashboard() {
           <div className="bg-white dark:bg-linear-to-br dark:from-slate-900 dark:to-slate-900/95 border border-slate-200 dark:border-slate-700 rounded-3xl max-w-lg w-full shadow-2xl shadow-slate-300/20 dark:shadow-indigo-500/10 animate-in zoom-in-95 duration-300">
             {/* Modal Header */}
             <div className={`px-6 py-5 border-b ${
-              modalType === "checkin" ? "border-emerald-200 dark:border-emerald-800/30 bg-emerald-50 dark:bg-emerald-950/20" : "border-rose-200 dark:border-rose-800/30 bg-rose-50 dark:bg-rose-950/20"
+              modalType === "checkin" 
+                ? selectedSpot?.status === 'reserved'
+                  ? "border-amber-200 dark:border-amber-800/30 bg-amber-50 dark:bg-amber-950/20"
+                  : "border-emerald-200 dark:border-emerald-800/30 bg-emerald-50 dark:bg-emerald-950/20"
+                : "border-rose-200 dark:border-rose-800/30 bg-rose-50 dark:bg-rose-950/20"
             } rounded-t-3xl`}>
               <div className="flex items-center justify-between">
                 <h3 className={`text-2xl font-bold flex items-center gap-3 ${
-                  modalType === "checkin" ? "text-emerald-700 dark:text-emerald-300" : "text-rose-700 dark:text-rose-300"
+                  modalType === "checkin" 
+                    ? selectedSpot?.status === 'reserved'
+                      ? "text-amber-700 dark:text-amber-300"
+                      : "text-emerald-700 dark:text-emerald-300"
+                    : "text-rose-700 dark:text-rose-300"
                 }`}>
                   {modalType === "checkin" ? (
                     <>
-                      <div className="w-10 h-10 rounded-xl bg-emerald-100 dark:bg-emerald-500/20 flex items-center justify-center">
-                        <CheckCircle2 className="w-6 h-6 text-emerald-600 dark:text-emerald-400" />
+                      <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
+                        selectedSpot?.status === 'reserved'
+                          ? "bg-amber-100 dark:bg-amber-500/20"
+                          : "bg-emerald-100 dark:bg-emerald-500/20"
+                      }`}>
+                        <CheckCircle2 className={`w-6 h-6 ${
+                          selectedSpot?.status === 'reserved'
+                            ? "text-amber-600 dark:text-amber-400"
+                            : "text-emerald-600 dark:text-emerald-400"
+                        }`} />
                       </div>
                       Check In Vehicle
                     </>
@@ -827,12 +903,16 @@ export default function OperatorDashboard() {
               <div className={`mb-6 p-5 rounded-2xl border-2 ${
                 selectedSpot.is_occupied
                   ? "bg-linear-to-br from-rose-50 to-rose-100 dark:from-rose-950/50 dark:to-rose-900/30 border-rose-300 dark:border-rose-800/50"
+                  : selectedSpot.status === 'reserved'
+                  ? "bg-linear-to-br from-amber-50 to-amber-100 dark:from-amber-950/50 dark:to-amber-900/30 border-amber-300 dark:border-amber-800/50"
                   : "bg-linear-to-br from-emerald-50 to-emerald-100 dark:from-emerald-950/50 dark:to-emerald-900/30 border-emerald-300 dark:border-emerald-800/50"
               }`}>
                 <div className="flex items-center gap-4">
                   <div className={`w-20 h-20 rounded-2xl flex items-center justify-center text-3xl font-bold shadow-lg ${
                     selectedSpot.is_occupied
                       ? "bg-rose-200 dark:bg-rose-500/20 text-rose-800 dark:text-rose-200 shadow-rose-300/50 dark:shadow-rose-500/20"
+                      : selectedSpot.status === 'reserved'
+                      ? "bg-amber-200 dark:bg-amber-500/20 text-amber-800 dark:text-amber-200 shadow-amber-300/50 dark:shadow-amber-500/20"
                       : "bg-emerald-200 dark:bg-emerald-500/20 text-emerald-800 dark:text-emerald-200 shadow-emerald-300/50 dark:shadow-emerald-500/20"
                   }`}>
                     {selectedSpot.label}
@@ -841,7 +921,7 @@ export default function OperatorDashboard() {
                     <div className="text-sm text-slate-600 dark:text-slate-400 mb-1">Parking Spot</div>
                     <div className="text-2xl font-bold text-slate-900 dark:text-white">{selectedSpot.label}</div>
                     <div className="text-sm text-slate-600 dark:text-slate-500 mt-1">
-                      {selectedSpot.is_occupied ? "Currently Occupied" : "Available"}
+                      {selectedSpot.is_occupied ? "Currently Occupied" : selectedSpot.status === 'reserved' ? "Reserved" : "Available"}
                     </div>
                   </div>
                 </div>
@@ -850,20 +930,47 @@ export default function OperatorDashboard() {
               {modalType === "checkin" ? (
                 /* Check In Form */
                 <div className="space-y-4">
-                  <div>
-                    <label className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3 flex items-center gap-2">
-                      <Car className="w-4 h-4" />
-                      Vehicle Number Plate
-                    </label>
-                    <input
-                      type="text"
-                      value={numberPlate}
-                      onChange={(e) => setNumberPlate(e.target.value.toUpperCase())}
-                      placeholder="e.g., ABC-1234"
-                      className="w-full px-5 py-4 bg-white dark:bg-slate-950/80 border-2 border-slate-300 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white text-lg font-mono placeholder:text-slate-400 dark:placeholder:text-slate-600 focus:border-emerald-500 focus:outline-none focus:ring-4 focus:ring-emerald-500/20 transition-all"
-                      autoFocus
-                    />
-                  </div>
+                  {selectedSpot?.status === 'reserved' && selectedSpot?.reserved_plate ? (
+                    /* Reserved Spot - Show pre-booked vehicle info */
+                    <div className="bg-amber-50 dark:bg-amber-950/30 border-2 border-amber-300 dark:border-amber-700 rounded-xl p-5">
+                      <div className="flex items-center gap-3 mb-3">
+                        <div className="w-10 h-10 rounded-lg bg-amber-500 flex items-center justify-center">
+                          <Clock className="w-5 h-5 text-white" />
+                        </div>
+                        <div>
+                          <div className="text-sm font-semibold text-amber-900 dark:text-amber-300">Pre-booked Vehicle</div>
+                          <div className="text-xs text-amber-700 dark:text-amber-500">Reserved spot</div>
+                        </div>
+                      </div>
+                      <div className="bg-white dark:bg-slate-900 rounded-lg p-4 border border-amber-200 dark:border-amber-800">
+                        <div className="text-xs text-slate-600 dark:text-slate-400 mb-2">Vehicle Plate Number</div>
+                        <div className="text-2xl font-bold font-mono text-amber-600 dark:text-amber-400">
+                          {selectedSpot.reserved_plate}
+                        </div>
+                      </div>
+                      <div className="mt-3 p-3 bg-amber-100 dark:bg-amber-900/30 rounded-lg">
+                        <div className="text-xs text-amber-800 dark:text-amber-300">
+                          <span className="font-semibold">Note:</span> 20% reservation fee (Rs. {Math.round((selectedLot.price_per_hour || selectedLot.base_price || 50) * 0.20)}) will be added to final checkout
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    /* Regular Available Spot - Manual entry */
+                    <div>
+                      <label className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3 flex items-center gap-2">
+                        <Car className="w-4 h-4" />
+                        Vehicle Number Plate
+                      </label>
+                      <input
+                        type="text"
+                        value={numberPlate}
+                        onChange={(e) => setNumberPlate(e.target.value.toUpperCase())}
+                        placeholder="e.g., ABC-1234"
+                        className="w-full px-5 py-4 bg-white dark:bg-slate-950/80 border-2 border-slate-300 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white text-lg font-mono placeholder:text-slate-400 dark:placeholder:text-slate-600 focus:border-emerald-500 focus:outline-none focus:ring-4 focus:ring-emerald-500/20 transition-all"
+                        autoFocus
+                      />
+                    </div>
+                  )}
                   
                   <div className="bg-slate-50 dark:bg-slate-950/50 border border-slate-200 dark:border-slate-800 rounded-xl p-4">
                     <div className="flex items-center gap-3 text-sm text-slate-600 dark:text-slate-400">
@@ -872,19 +979,8 @@ export default function OperatorDashboard() {
                     </div>
                     <div className="flex items-center gap-3 text-sm text-slate-600 dark:text-slate-400 mt-2">
                       <DollarSign className="w-4 h-4" />
-                      <span>Rate: <span className="text-emerald-600 dark:text-emerald-400 font-semibold">Rs. {selectedLot.price_per_hour} per hour</span></span>
+                      <span>Rate: <span className={`font-semibold ${selectedSpot?.status === 'reserved' ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'}`}>Rs. {selectedLot.price_per_hour} per hour</span></span>
                     </div>
-                    {selectedSpot?.status === 'reserved' && selectedSpot?.reserved_plate && (
-                      <div className="mt-3 pt-3 border-t border-slate-200 dark:border-slate-700">
-                        <div className="flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400">
-                          <Clock className="w-3 h-3" />
-                          <span className="font-semibold">Pre-booked by: {selectedSpot.reserved_plate}</span>
-                        </div>
-                        <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                          20% reservation fee (Rs. {Math.round((selectedLot.price_per_hour || selectedLot.base_price || 50) * 0.20)}) will be added to checkout
-                        </div>
-                      </div>
-                    )}
                   </div>
                 </div>
               ) : (
@@ -980,7 +1076,9 @@ export default function OperatorDashboard() {
                 onClick={modalType === "checkin" ? handleCheckIn : handleCheckOut}
                 className={`flex-1 h-12 font-semibold text-lg shadow-lg transition-all ${
                   modalType === "checkin"
-                    ? "bg-linear-to-r from-emerald-600 to-emerald-500 hover:from-emerald-700 hover:to-emerald-600 shadow-emerald-300/50 dark:shadow-emerald-500/30"
+                    ? selectedSpot?.status === 'reserved'
+                      ? "bg-linear-to-r from-amber-600 to-amber-500 hover:from-amber-700 hover:to-amber-600 shadow-amber-300/50 dark:shadow-amber-500/30"
+                      : "bg-linear-to-r from-emerald-600 to-emerald-500 hover:from-emerald-700 hover:to-emerald-600 shadow-emerald-300/50 dark:shadow-emerald-500/30"
                     : "bg-linear-to-r from-rose-600 to-rose-500 hover:from-rose-700 hover:to-rose-600 shadow-rose-300/50 dark:shadow-rose-500/30"
                 } text-white disabled:opacity-50 disabled:cursor-not-allowed`}
                 disabled={processing || (modalType === "checkin" && !numberPlate.trim())}

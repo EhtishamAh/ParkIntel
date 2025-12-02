@@ -721,14 +721,17 @@ export function SmartParkingMap({
     // Save pre-booking to database
     try {
       const { data: { user } } = await supabase.auth.getUser();
+      // Normalize plate number: uppercase and remove all spaces for consistent matching
+      const normalizedPlate = booking.plateNumber.replace(/\s+/g, '');
       await supabase.from("pre_bookings").insert({
         lot_id: booking.lotId,
-        plate_number: booking.plateNumber,
+        plate_number: normalizedPlate,
         reservation_fee: reservationFee,
         status: "active",
         expires_at: new Date(booking.expiresAt).toISOString(),
         user_id: user?.id || null,
       });
+      console.log("Pre-booking saved with plate:", normalizedPlate);
     } catch (err) {
       console.error("Pre-booking save failed:", err);
     }
